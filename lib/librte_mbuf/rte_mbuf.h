@@ -473,8 +473,15 @@ struct rte_mbuf {
 			uint32_t l3_type:4; /**< (Outer) L3 type. */
 			uint32_t l4_type:4; /**< (Outer) L4 type. */
 			uint32_t tun_type:4; /**< Tunnel type. */
-			uint32_t inner_l2_type:4; /**< Inner L2 type. */
-			uint32_t inner_l3_type:4; /**< Inner L3 type. */
+			RTE_STD_C11
+			union {
+				uint8_t inner_esp_next_proto;
+				__extension__
+				struct {
+					uint8_t inner_l2_type:4; /**< Inner L2 type. */
+					uint8_t inner_l3_type:4; /**< Inner L3 type. */
+				};
+			};
 			uint32_t inner_l4_type:4; /**< Inner L4 type. */
 		};
 	};

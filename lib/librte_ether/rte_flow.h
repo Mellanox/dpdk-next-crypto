@@ -51,6 +51,7 @@
 #include <rte_udp.h>
 #include <rte_byteorder.h>
 #include <rte_esp.h>
+#include <rte_security.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -939,6 +940,14 @@ enum rte_flow_action_type {
 	 * See struct rte_flow_action_vf.
 	 */
 	RTE_FLOW_ACTION_TYPE_VF,
+
+	/**
+	 * Encrypts or decrypts packets matching this flow. Must be either egress
+	 * or ingress, but not both.
+	 *
+	 * See struct rte_flow_action_security.
+	 */
+	RTE_FLOW_ACTION_TYPE_SECURITY,
 };
 
 /**
@@ -1029,6 +1038,23 @@ struct rte_flow_action_vf {
 	uint32_t original:1; /**< Use original VF ID if possible. */
 	uint32_t reserved:31; /**< Reserved, must be zero. */
 	uint32_t id; /**< VF ID to redirect packets to. */
+};
+
+/**
+ * RTE_FLOW_ACTION_TYPE_CRYPTO
+ *
+ * Encrypts or decrypts packets matching this flow. Must be either egress
+ * or ingress, but not both.
+ *
+ * Packets matched by IPsec SA lookup, which includes at least the following:
+ * Destination IP and ESP SPI, but it may include Source IP, UDP ports, etc.
+ * Packets are encrypted in the outgoing direction and decrypted in the incoming
+ * direction.
+ *
+ * Non-terminating by default.
+ */
+struct rte_flow_action_security {
+	struct rte_security_session *sess; /* applied crypto transform */
 };
 
 /**

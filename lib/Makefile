@@ -48,6 +48,7 @@ DEPDIRS-librte_cmdline := librte_eal
 DIRS-$(CONFIG_RTE_LIBRTE_ETHER) += librte_ether
 DEPDIRS-librte_ether := librte_net librte_eal librte_mempool librte_ring
 DEPDIRS-librte_ether += librte_mbuf
+DEPDIRS-librte_ether += librte_cryptodev
 DIRS-$(CONFIG_RTE_LIBRTE_CRYPTODEV) += librte_cryptodev
 DEPDIRS-librte_cryptodev := librte_eal librte_mempool librte_ring librte_mbuf
 DEPDIRS-librte_cryptodev += librte_kvargs

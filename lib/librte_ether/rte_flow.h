@@ -50,6 +50,7 @@
 #include <rte_tcp.h>
 #include <rte_udp.h>
 #include <rte_byteorder.h>
+#include <rte_esp.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -309,6 +310,13 @@ enum rte_flow_item_type {
 	 * See struct rte_flow_item_fuzzy.
 	 */
 	RTE_FLOW_ITEM_TYPE_FUZZY,
+
+	/**
+	 * Matches a ESP header.
+	 *
+	 * See struct rte_flow_item_esp.
+	 */
+	RTE_FLOW_ITEM_TYPE_ESP,
 };
 
 /**
@@ -733,6 +741,22 @@ static const struct rte_flow_item_fuzzy rte_flow_item_fuzzy_mask = {
 	.thresh = 0xffffffff,
 };
 #endif
+
+/**
+ * RTE_FLOW_ITEM_TYPE_ESP
+ *
+ * Matches an ESP header.
+ */
+struct rte_flow_item_esp {
+	struct esp_hdr hdr; /**< ESP header definition. */
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_ESP. */
+static const struct rte_flow_item_esp rte_flow_item_esp_mask = {
+	.hdr = {
+		.spi = 0xffffffff,
+	},
+};
 
 /**
  * Matching pattern item definition.

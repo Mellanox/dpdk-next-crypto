@@ -41,6 +41,7 @@
 
 #include <rte_memzone.h>
 #include <rte_crypto.h>
+#include <rte_security.h>
 #include <rte_cryptodev.h>
 #include <rte_byteorder.h>
 #include <rte_errno.h>
@@ -50,6 +51,8 @@
 #include "ipsec.h"
 #include "esp.h"
 #include "parser.h"
+
+#define IPDEFTTL 64
 
 struct supported_cipher_algo {
 	const char *keyword;
@@ -238,6 +241,8 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 	uint32_t src_p = 0;
 	uint32_t dst_p = 0;
 	uint32_t mode_p = 0;
+	uint32_t type_p = 0;
+	uint32_t portid_p = 0;
 
 	if (strcmp(tokens[0], "in") == 0) {
 		ri = &nb_sa_in;
@@ -550,6 +555,47 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 			continue;
 		}
 
+		if (strcmp(tokens[ti], "type") == 0) {
+			APP_CHECK_PRESENCE(type_p, tokens[ti], status);
+			if (status->status < 0)
+				return;
+
+			INCREMENT_TOKEN_INDEX(ti, n_tokens, status);
+			if (status->status < 0)
+				return;
+
+			if (strcmp(tokens[ti], "eth-inline-crypto") == 0)
+				rule->type = RTE_SECURITY_SESS_ETH_INLINE_CRYPTO;
+			else if (strcmp(tokens[ti], "eth-proto-offload") == 0)
+				rule->type = RTE_SECURITY_SESS_ETH_PROTO_OFFLOAD;
+			else if (strcmp(tokens[ti], "crypto-proto-offload") == 0)
+				rule->type = RTE_SECURITY_SESS_CRYPTO_PROTO_OFFLOAD;
+			else if (strcmp(tokens[ti], "non-proto") == 0)
+				rule->type = RTE_SECURITY_SESS_NONE;
+			else {
+				APP_CHECK(0, status, "unrecognized "
+					"input \"%s\"", tokens[ti]);
+				return;
+			}
+
+			type_p = 1;
+			continue;
+		}
+
+		if (strcmp(tokens[ti], "port_id") == 0) {
+			APP_CHECK_PRESENCE(portid_p, tokens[ti], status);
+			if (status->status < 0)
+				return;
+			INCREMENT_TOKEN_INDEX(ti, n_tokens, status);
+			if (status->status < 0)
+				return;
+			rule->portid = atoi(tokens[ti]);
+			if (status->status < 0)
+				return;
+			portid_p = 1;
+			continue;
+		}
+
 		/* unrecognizeable input */
 		APP_CHECK(0, status, "unrecognized input \"%s\"",
 			tokens[ti]);
@@ -579,6 +625,14 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 	APP_CHECK(mode_p == 1, status, "missing mode option");
 	if (status->status < 0)
 		return;
+
+	if ((rule->type != RTE_SECURITY_SESS_NONE) && (portid_p == 0))
+		printf("Missing portid option, falling back to non-offload");
+
+	if (!type_p || !portid_p) {
+		rule->type = RTE_SECURITY_SESS_NONE;
+		rule->portid = -1;
+	}
 
 	*ri = *ri + 1;
 }
@@ -647,9 +701,12 @@ print_one_sa_rule(const struct ipsec_sa *sa, int inbound)
 
 struct sa_ctx {
 	struct ipsec_sa sa[IPSEC_SA_MAX_ENTRIES];
-	struct {
-		struct rte_crypto_sym_xform a;
-		struct rte_crypto_sym_xform b;
+	union {
+		struct {
+			struct rte_crypto_sym_xform a;
+			struct rte_crypto_sym_xform b;
+		};
+		struct rte_security_ipsec_xform c;
 	} xf[IPSEC_SA_MAX_ENTRIES];
 };
 
@@ -706,40 +763,57 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 			sa->dst.ip.ip4 = rte_cpu_to_be_32(sa->dst.ip.ip4);
 		}
 
+		if (sa->type == RTE_SECURITY_SESS_CRYPTO_PROTO_OFFLOAD) {
+			sa_ctx->xf[idx].c.cipher_alg = sa->cipher_algo;
+			sa_ctx->xf[idx].c.auth_alg = sa->auth_algo;
+			sa_ctx->xf[idx].c.cipher_key.data = sa->cipher_key;
+			sa_ctx->xf[idx].c.auth_key.data = sa->auth_key;
+			sa_ctx->xf[idx].c.cipher_key.length =
+						sa->cipher_key_len;
+			sa_ctx->xf[idx].c.auth_key.length = sa->auth_key_len;
+			sa_ctx->xf[idx].c.op = (inbound == 1)?
+						RTE_SECURITY_IPSEC_OP_DECAP :
+						RTE_SECURITY_IPSEC_OP_ENCAP;
+			sa_ctx->xf[idx].c.salt = sa->salt;
+			sa_ctx->xf[idx].c.spi = sa->spi;
+			if (sa->flags == IP4_TUNNEL) {
+				sa_ctx->xf[idx].c.mode =
+					RTE_SECURITY_IPSEC_SA_MODE_TUNNEL;
+				sa_ctx->xf[idx].c.tunnel.ipv4.ttl = IPDEFTTL;
+				memcpy((uint8_t *)&sa_ctx->xf[idx].c.tunnel.ipv4.src_ip,
+						(uint8_t *)&sa->src.ip.ip4, 4);
+				memcpy((uint8_t *)&sa_ctx->xf[idx].c.tunnel.ipv4.dst_ip,
+						(uint8_t *)&sa->dst.ip.ip4, 4);
+//				sa_ctx->xf[idx].c.tunnel.ipv4.src_ip =
+//					(struct in_addr)sa->src.ip.ip4;
+//				sa_ctx->xf[idx].c.tunnel.ipv4.dst_ip =
+//					(struct in_addr)sa->dst.ip.ip4;
+			}
+			/* TODO support for Transport and IPV6 tunnel */
+			sa->sec_xform = &sa_ctx->xf[idx].c;
+
+			print_one_sa_rule(sa, inbound);
+			continue;
+		}
+
 		if (sa->aead_algo == RTE_CRYPTO_AEAD_AES_GCM) {
 			iv_length = 16;
 
-			if (inbound) {
-				sa_ctx->xf[idx].a.type = RTE_CRYPTO_SYM_XFORM_AEAD;
-				sa_ctx->xf[idx].a.aead.algo = sa->aead_algo;
-				sa_ctx->xf[idx].a.aead.key.data = sa->cipher_key;
-				sa_ctx->xf[idx].a.aead.key.length =
-					sa->cipher_key_len;
-				sa_ctx->xf[idx].a.aead.op =
-					RTE_CRYPTO_AEAD_OP_DECRYPT;
-				sa_ctx->xf[idx].a.next = NULL;
-				sa_ctx->xf[idx].a.aead.iv.offset = IV_OFFSET;
-				sa_ctx->xf[idx].a.aead.iv.length = iv_length;
-				sa_ctx->xf[idx].a.aead.aad_length =
-					sa->aad_len;
-				sa_ctx->xf[idx].a.aead.digest_length =
-					sa->digest_len;
-			} else { /* outbound */
-				sa_ctx->xf[idx].a.type = RTE_CRYPTO_SYM_XFORM_AEAD;
-				sa_ctx->xf[idx].a.aead.algo = sa->aead_algo;
-				sa_ctx->xf[idx].a.aead.key.data = sa->cipher_key;
-				sa_ctx->xf[idx].a.aead.key.length =
-					sa->cipher_key_len;
-				sa_ctx->xf[idx].a.aead.op =
-					RTE_CRYPTO_AEAD_OP_ENCRYPT;
-				sa_ctx->xf[idx].a.next = NULL;
-				sa_ctx->xf[idx].a.aead.iv.offset = IV_OFFSET;
-				sa_ctx->xf[idx].a.aead.iv.length = iv_length;
-				sa_ctx->xf[idx].a.aead.aad_length =
-					sa->aad_len;
-				sa_ctx->xf[idx].a.aead.digest_length =
-					sa->digest_len;
-			}
+			sa_ctx->xf[idx].a.type = RTE_CRYPTO_SYM_XFORM_AEAD;
+			sa_ctx->xf[idx].a.aead.algo = sa->aead_algo;
+			sa_ctx->xf[idx].a.aead.key.data = sa->cipher_key;
+			sa_ctx->xf[idx].a.aead.key.length =
+				sa->cipher_key_len;
+			sa_ctx->xf[idx].a.aead.op = (inbound == 1) ?
+				RTE_CRYPTO_AEAD_OP_DECRYPT :
+				RTE_CRYPTO_AEAD_OP_ENCRYPT;
+			sa_ctx->xf[idx].a.next = NULL;
+			sa_ctx->xf[idx].a.aead.iv.offset = IV_OFFSET;
+			sa_ctx->xf[idx].a.aead.iv.length = iv_length;
+			sa_ctx->xf[idx].a.aead.aad_length =
+				sa->aad_len;
+			sa_ctx->xf[idx].a.aead.digest_length =
+				sa->digest_len;
 
 			sa->xforms = &sa_ctx->xf[idx].a;
 

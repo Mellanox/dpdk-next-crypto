@@ -37,6 +37,7 @@
 #include <rte_branch_prediction.h>
 #include <rte_log.h>
 #include <rte_crypto.h>
+#include <rte_security.h>
 #include <rte_cryptodev.h>
 #include <rte_mbuf.h>
 #include <rte_hash.h>
@@ -71,22 +72,40 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 			ipsec_ctx->tbl[cdev_id_qp].id,
 			ipsec_ctx->tbl[cdev_id_qp].qp);
 
-	sa->crypto_session = rte_cryptodev_sym_session_create(
-			ipsec_ctx->session_pool);
-	rte_cryptodev_sym_session_init(ipsec_ctx->tbl[cdev_id_qp].id,
-			sa->crypto_session, sa->xforms,
-			ipsec_ctx->session_pool);
+	if (sa->type == RTE_SECURITY_SESS_NONE) {
+		sa->crypto_session = rte_cryptodev_sym_session_create(
+				ipsec_ctx->session_pool);
+		rte_cryptodev_sym_session_init(ipsec_ctx->tbl[cdev_id_qp].id,
+				sa->crypto_session, sa->xforms,
+				ipsec_ctx->session_pool);
 
-	rte_cryptodev_info_get(ipsec_ctx->tbl[cdev_id_qp].id, &cdev_info);
-	if (cdev_info.sym.max_nb_sessions_per_qp > 0) {
-		ret = rte_cryptodev_queue_pair_attach_sym_session(
-				ipsec_ctx->tbl[cdev_id_qp].id,
-				ipsec_ctx->tbl[cdev_id_qp].qp,
-				sa->crypto_session);
+		rte_cryptodev_info_get(ipsec_ctx->tbl[cdev_id_qp].id, &cdev_info);
+		if (cdev_info.sym.max_nb_sessions_per_qp > 0) {
+			ret = rte_cryptodev_queue_pair_attach_sym_session(
+					ipsec_ctx->tbl[cdev_id_qp].id,
+					ipsec_ctx->tbl[cdev_id_qp].qp,
+					sa->crypto_session);
+			if (ret < 0) {
+				RTE_LOG(ERR, IPSEC,
+					"Session cannot be attached to qp %u ",
+					ipsec_ctx->tbl[cdev_id_qp].qp);
+				return -1;
+			}
+		}
+	} else {
+		struct rte_security_sess_conf sess_conf;
+
+		sa->sec_session = rte_security_session_create(
+				ipsec_ctx->session_pool);
+		sess_conf.action_type = sa->type;
+		sess_conf.protocol = RTE_SEC_CONF_IPSEC;
+		sess_conf.ipsec_xform = sa->sec_xform;
+
+		ret = rte_security_session_init(sa->portid, sa->sec_session,
+					&sess_conf, ipsec_ctx->session_pool);
 		if (ret < 0) {
-			RTE_LOG(ERR, IPSEC,
-				"Session cannot be attached to qp %u ",
-				ipsec_ctx->tbl[cdev_id_qp].qp);
+			RTE_LOG(ERR, IPSEC, "SEC Session init failed: err: %d",
+					ret);
 			return -1;
 		}
 	}
@@ -125,6 +144,7 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 {
 	int32_t ret = 0, i;
 	struct ipsec_mbuf_metadata *priv;
+	struct rte_crypto_sym_op *sym_cop;
 	struct ipsec_sa *sa;
 
 	for (i = 0; i < nb_pkts; i++) {
@@ -140,24 +160,50 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 		sa = sas[i];
 		priv->sa = sa;
 
-		priv->cop.type = RTE_CRYPTO_OP_TYPE_SYMMETRIC;
-		priv->cop.status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+		switch (sa->type) {
+		case RTE_SECURITY_SESS_CRYPTO_PROTO_OFFLOAD:
+			priv->cop.type = RTE_CRYPTO_OP_TYPE_SYMMETRIC;
+			priv->cop.status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
 
-		rte_prefetch0(&priv->sym_cop);
+			rte_prefetch0(&priv->sym_cop);
 
-		if ((unlikely(sa->crypto_session == NULL)) &&
-				create_session(ipsec_ctx, sa)) {
-			rte_pktmbuf_free(pkts[i]);
-			continue;
-		}
+			if ((unlikely(sa->sec_session == NULL)) &&
+					create_session(ipsec_ctx, sa)) {
+				rte_pktmbuf_free(pkts[i]);
+				continue;
+			}
 
-		rte_crypto_op_attach_sym_session(&priv->cop,
-				sa->crypto_session);
+			sym_cop = get_sym_cop(&priv->cop);
+			sym_cop->m_src = pkts[i];
 
-		ret = xform_func(pkts[i], sa, &priv->cop);
-		if (unlikely(ret)) {
-			rte_pktmbuf_free(pkts[i]);
-			continue;
+			rte_security_attach_session(&priv->cop,
+					sa->sec_session);
+			break;
+		case RTE_SECURITY_SESS_NONE:
+
+			priv->cop.type = RTE_CRYPTO_OP_TYPE_SYMMETRIC;
+			priv->cop.status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+
+			rte_prefetch0(&priv->sym_cop);
+
+			if ((unlikely(sa->crypto_session == NULL)) &&
+					create_session(ipsec_ctx, sa)) {
+				rte_pktmbuf_free(pkts[i]);
+				continue;
+			}
+
+			rte_crypto_op_attach_sym_session(&priv->cop,
+					sa->crypto_session);
+
+			ret = xform_func(pkts[i], sa, &priv->cop);
+			if (unlikely(ret)) {
+				rte_pktmbuf_free(pkts[i]);
+				continue;
+			}
+			break;
+		case RTE_SECURITY_SESS_ETH_PROTO_OFFLOAD:
+		case RTE_SECURITY_SESS_ETH_INLINE_CRYPTO:
+			break;
 		}
 
 		RTE_ASSERT(sa->cdev_id_qp < ipsec_ctx->nb_qps);
@@ -199,11 +245,14 @@ ipsec_dequeue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 
 			RTE_ASSERT(sa != NULL);
 
-			ret = xform_func(pkt, sa, cops[j]);
-			if (unlikely(ret))
-				rte_pktmbuf_free(pkt);
-			else
-				pkts[nb_pkts++] = pkt;
+			if (sa->type == RTE_SECURITY_SESS_NONE) {
+				ret = xform_func(pkt, sa, cops[j]);
+				if (unlikely(ret)) {
+					rte_pktmbuf_free(pkt);
+					continue;
+				}
+			}
+			pkts[nb_pkts++] = pkt;
 		}
 	}
 

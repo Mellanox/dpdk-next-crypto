@@ -67,6 +67,11 @@ enum shr_desc_type {
 #define DIR_ENC                 1
 #define DIR_DEC                 0
 
+#define DPAA2_SET_FLC_EWS(flc)  flc->word1_bits23_16 |= 0x1
+#define DPAA2_SET_FLC_RSC(flc)  (flc->word1_bits31_24 |= 0x1)
+#define DPAA2_SET_FLC_REUSE_BS(flc) flc->mode_bits |= 0x8000
+#define DPAA2_SET_FLC_REUSE_FF(flc) flc->mode_bits |= 0x2000
+
 /* SEC Flow Context Descriptor */
 struct sec_flow_context {
 	/* word 0 */
@@ -411,4 +416,32 @@ static const struct rte_cryptodev_capabilities dpaa2_sec_capabilities[] = {
 
 	RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()
 };
+/**
+ * Checksum
+ *
+ * @param buffer calculate chksum for buffer
+ * @param len    buffer length
+ *
+ * @return checksum value in host cpu order
+ */
+static inline uint16_t calc_chksum(void *buffer, int len)
+{
+	uint16_t *buf = (uint16_t *)buffer;
+	uint32_t sum = 0;
+	uint16_t result;
+
+	for (sum = 0; len > 1; len -= 2)
+		sum += *buf++;
+
+	if (len == 1)
+		sum += *(unsigned char *)buf;
+
+	sum = (sum >> 16) + (sum & 0xFFFF);
+	sum += (sum >> 16);
+	result = ~sum;
+
+	return  result;
+}
+
+
 #endif /* _RTE_DPAA2_SEC_PMD_PRIVATE_H_ */

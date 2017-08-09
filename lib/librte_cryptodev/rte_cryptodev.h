@@ -47,6 +47,7 @@ extern "C" {
 
 #include "rte_kvargs.h"
 #include "rte_crypto.h"
+#include "rte_security.h"
 #include "rte_dev.h"
 #include <rte_common.h>
 #include <rte_vdev.h>
@@ -112,20 +113,6 @@ extern const char **rte_cyptodev_names;
  */
 #define rte_crypto_op_ctophys_offset(c, o)	\
 	(phys_addr_t)((c)->phys_addr + (o))
-
-/**
- * Crypto parameters range description
- */
-struct rte_crypto_param_range {
-	uint16_t min;	/**< minimum size */
-	uint16_t max;	/**< maximum size */
-	uint16_t increment;
-	/**< if a range of sizes are supported,
-	 * this parameter is used to indicate
-	 * increments in byte size that are supported
-	 * between the minimum and maximum
-	 */
-};
 
 /**
  * Symmetric Crypto Capability
@@ -375,6 +362,9 @@ struct rte_cryptodev_info {
 
 	const struct rte_cryptodev_capabilities *capabilities;
 	/**< Array of devices supported capabilities */
+
+	const struct rte_security_capabilities *sec_capabilities;
+	/**< Array of devices supported security capabilities */
 
 	unsigned max_nb_queue_pairs;
 	/**< Maximum number of queues pairs supported by device. */
@@ -745,6 +735,8 @@ struct rte_cryptodev {
 	/**< Pointer to device data */
 	struct rte_cryptodev_ops *dev_ops;
 	/**< Functions exported by PMD */
+	struct rte_security_ops *sec_ops;
+	/**< Security functions exported by PMD */
 	uint64_t feature_flags;
 	/**< Supported features */
 	struct rte_device *device;

@@ -79,3 +79,13 @@ DPDK_17.08 {
 	rte_crypto_aead_operation_strings;
 
 } DPDK_17.05;
+
+DPDK_17.11 {
+	global:
+
+	rte_security_session_create;
+	rte_security_session_init;
+	rte_security_attach_session;
+	rte_security_session_free;
+
+} DPDK_17.08;

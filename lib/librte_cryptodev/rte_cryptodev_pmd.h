@@ -357,6 +357,41 @@ struct rte_cryptodev_ops {
 	/**< Detach session from queue pair. */
 };
 
+/**
+ * Configure a security session on a device.
+ *
+ * @param	dev		Crypto device pointer
+ * @param	conf		Security session configuration
+ * @param	sess		Pointer to Security private session structure
+ * @param	mp		Mempool where the private session is allocated
+ *
+ * @return
+ *  - Returns 0 if private session structure have been created successfully.
+ *  - Returns -EINVAL if input parameters are invalid.
+ *  - Returns -ENOTSUP if crypto device does not support the crypto transform.
+ *  - Returns -ENOMEM if the private session could not be allocated.
+ */
+typedef int (*security_configure_session_t)(void *dev,
+		struct rte_security_sess_conf *conf,
+		struct rte_security_session *sess,
+		struct rte_mempool *mp);
+
+/**
+ * Free driver private session data.
+ *
+ * @param	dev		Crypto device pointer
+ * @param	sess		Security session structure
+ */
+typedef void (*security_free_session_t)(void *dev,
+		struct rte_security_session *sess);
+
+/** Security operations function pointer table */
+struct rte_security_ops {
+	security_configure_session_t session_configure;
+	/**< Configure a Security session. */
+	security_free_session_t session_clear;
+	/**< Clear a security sessions private data. */
+};
 
 /**
  * Function for internal use by dummy drivers primarily, e.g. ring-based

@@ -53,6 +53,19 @@ extern "C" {
 #include <rte_mempool.h>
 #include <rte_common.h>
 
+/**
+ * Crypto parameters range description
+ */
+struct rte_crypto_param_range {
+	uint16_t min;	/**< minimum size */
+	uint16_t max;	/**< maximum size */
+	uint16_t increment;
+	/**< if a range of sizes are supported,
+	 * this parameter is used to indicate
+	 * increments in byte size that are supported
+	 * between the minimum and maximum
+	 */
+};
 
 /** Symmetric Cipher Algorithms */
 enum rte_crypto_cipher_algorithm {
@@ -505,6 +518,8 @@ struct rte_crypto_sym_op {
 		/**< Handle for the initialised session context */
 		struct rte_crypto_sym_xform *xform;
 		/**< Session-less API crypto operation parameters */
+		struct rte_security_session *sec_session;
+		/**< Handle for the initialised security session context */
 	};
 
 	RTE_STD_C11

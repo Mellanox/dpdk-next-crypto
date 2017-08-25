@@ -86,9 +86,12 @@ rte_security_session_init(uint16_t dev_id,
 			return -EINVAL;
 		cdev = rte_cryptodev_pmd_get_dev(dev_id);
 		index = cdev->driver_id;
+		if (cdev == NULL || sess == NULL || cdev->sec_ops == NULL
+				|| cdev->sec_ops->session_configure == NULL)
+			return -EINVAL;
 		if (sess->sess_private_data[index] == NULL) {
 			ret = cdev->sec_ops->session_configure((void *)cdev,
-							conf, sess, mp);
+					conf, sess, mp);
 			if (ret < 0) {
 				CDEV_LOG_ERR(
 					"cdev_id %d failed to configure session details",
@@ -101,15 +104,18 @@ rte_security_session_init(uint16_t dev_id,
 	case RTE_SECURITY_SESS_ETH_PROTO_OFFLOAD:
 		dev = &rte_eth_devices[dev_id];
 		index = dev->data->port_id;
+		if (dev == NULL || sess == NULL || dev->sec_ops == NULL
+				|| dev->sec_ops->session_configure == NULL)
+			return -EINVAL;
 		if (sess->sess_private_data[index] == NULL) {
-//			ret = dev->sec_ops->session_configure((void *)dev,
-//							conf, sess, mp);
-//			if (ret < 0) {
-//				CDEV_LOG_ERR(
-//					"dev_id %d failed to configure session details",
-//					dev_id);
-//				return ret;
-//			}
+			ret = dev->sec_ops->session_configure((void *)dev,
+					conf, sess, mp);
+			if (ret < 0) {
+				CDEV_LOG_ERR(
+					"dev_id %d failed to configure session details",
+					dev_id);
+				return ret;
+			}
 		}
 		break;
 	default:
@@ -154,16 +160,17 @@ rte_security_session_clear(uint8_t dev_id,
 	switch (action_type) {
 	case RTE_SECURITY_SESS_CRYPTO_PROTO_OFFLOAD:
 		cdev =  rte_cryptodev_pmd_get_dev(dev_id);
-		if (cdev == NULL || sess == NULL)
+		if (cdev == NULL || sess == NULL || cdev->sec_ops == NULL
+				|| cdev->sec_ops->session_clear == NULL)
 			return -EINVAL;
-		cdev->sec_ops->session_clear(cdev, sess);
+		cdev->sec_ops->session_clear((void *)cdev, sess);
 		break;
 	case RTE_SECURITY_SESS_ETH_INLINE_CRYPTO:
 	case RTE_SECURITY_SESS_ETH_PROTO_OFFLOAD:
 		dev = &rte_eth_devices[dev_id];
-		if (dev == NULL || sess == NULL)
-			return -EINVAL;
-//		dev->dev_ops->session_clear(dev, sess);
+		if (dev == NULL || sess == NULL || dev->sec_ops == NULL
+				|| dev->sec_ops->session_clear == NULL)
+		dev->sec_ops->session_clear((void *)dev, sess);
 		break;
 	default:
 		return -EINVAL;

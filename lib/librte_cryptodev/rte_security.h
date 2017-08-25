@@ -70,9 +70,9 @@ struct rte_security_ipsec_tunnel_param {
 		} ipv4; /**< IPv4 header parameters */
 
 		struct {
-			struct in6_addr *src_addr;
+			struct in6_addr src_addr;
 			/**< IPv6 source address */
-			struct in6_addr *dst_addr;
+			struct in6_addr dst_addr;
 			/**< IPv6 destination address */
 			uint8_t dscp;
 			/**< IPv6 Differentiated Services Code Point */
@@ -171,6 +171,12 @@ struct rte_security_ipsec_xform {
 		uint8_t *data;  /**< pointer to key data */
 		size_t length;   /**< key length in bytes */
 	} auth_key;
+	enum rte_crypto_aead_algorithm aead_alg;
+	/**< AEAD Algorithm */
+	struct {
+		uint8_t *data;  /**< pointer to key data */
+		size_t length;   /**< key length in bytes */
+	} aead_key;
 	uint32_t salt;	/**< salt for this SA */
 	enum rte_security_conf_ipsec_sa_mode mode;
 	/**< IPsec SA Mode - transport/tunnel */

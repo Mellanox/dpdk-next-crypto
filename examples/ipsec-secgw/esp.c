@@ -58,6 +58,9 @@ esp_inbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 	struct rte_crypto_sym_op *sym_cop;
 	int32_t payload_len, ip_hdr_len;
 
+	if (sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO)
+		return 0;
+
 	RTE_ASSERT(m != NULL);
 	RTE_ASSERT(sa != NULL);
 	RTE_ASSERT(cop != NULL);
@@ -174,6 +177,16 @@ esp_inbound_post(struct rte_mbuf *m, struct ipsec_sa *sa,
 	RTE_ASSERT(m != NULL);
 	RTE_ASSERT(sa != NULL);
 	RTE_ASSERT(cop != NULL);
+
+
+	if (sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO) {
+		if (m->ol_flags & PKT_RX_SECURITY_OFFLOAD
+				&& m->ol_flags & PKT_RX_SECURITY_OFFLOAD_FAILED)
+			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+		else
+			cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+	}
+
 
 	if (cop->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
 		RTE_LOG(ERR, IPSEC_ESP, "failed crypto op\n");
@@ -321,6 +334,9 @@ esp_outbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 	esp->spi = rte_cpu_to_be_32(sa->spi);
 	esp->seq = rte_cpu_to_be_32((uint32_t)sa->seq);
 
+	if (sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO)
+		return 0;
+
 	uint64_t *iv = (uint64_t *)(esp + 1);
 
 	sym_cop = get_sym_cop(cop);
@@ -419,9 +435,13 @@ esp_outbound_post(struct rte_mbuf *m __rte_unused,
 	RTE_ASSERT(sa != NULL);
 	RTE_ASSERT(cop != NULL);
 
-	if (cop->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
-		RTE_LOG(ERR, IPSEC_ESP, "Failed crypto op\n");
-		return -1;
+	if (sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO) {
+		m->ol_flags |= PKT_TX_SECURITY_OFFLOAD;
+	} else {
+		if (cop->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
+			RTE_LOG(ERR, IPSEC_ESP, "Failed crypto op\n");
+			return -1;
+		}
 	}
 
 	return 0;

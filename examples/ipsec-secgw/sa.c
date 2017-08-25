@@ -613,11 +613,13 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 		if (status->status < 0)
 			return;
 	} else {
-		APP_CHECK(cipher_algo_p == 1, status, "missing cipher or AEAD options");
+		APP_CHECK(cipher_algo_p == 1, status,
+			  "missing cipher or AEAD options");
 		if (status->status < 0)
 			return;
 
-		APP_CHECK(auth_algo_p == 1, status, "missing auth or AEAD options");
+		APP_CHECK(auth_algo_p == 1, status,
+			"missing auth or AEAD options");
 		if (status->status < 0)
 			return;
 	}
@@ -763,14 +765,31 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 			sa->dst.ip.ip4 = rte_cpu_to_be_32(sa->dst.ip.ip4);
 		}
 
-		if (sa->type == RTE_SECURITY_SESS_CRYPTO_PROTO_OFFLOAD) {
-			sa_ctx->xf[idx].c.cipher_alg = sa->cipher_algo;
-			sa_ctx->xf[idx].c.auth_alg = sa->auth_algo;
-			sa_ctx->xf[idx].c.cipher_key.data = sa->cipher_key;
-			sa_ctx->xf[idx].c.auth_key.data = sa->auth_key;
-			sa_ctx->xf[idx].c.cipher_key.length =
+		if (sa->type == RTE_SECURITY_SESS_CRYPTO_PROTO_OFFLOAD ||
+			sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO) {
+
+			if (sa->aead_algo == RTE_CRYPTO_AEAD_AES_GCM) {
+				sa_ctx->xf[idx].c.aead_alg =
+						sa->aead_algo;
+				sa_ctx->xf[idx].c.aead_key.data =
+						sa->cipher_key;
+				sa_ctx->xf[idx].c.aead_key.length =
 						sa->cipher_key_len;
-			sa_ctx->xf[idx].c.auth_key.length = sa->auth_key_len;
+
+			} else {
+				sa_ctx->xf[idx].c.cipher_alg = sa->cipher_algo;
+				sa_ctx->xf[idx].c.auth_alg = sa->auth_algo;
+				sa_ctx->xf[idx].c.cipher_key.data =
+						sa->cipher_key;
+				sa_ctx->xf[idx].c.auth_key.data =
+						sa->auth_key;
+				sa_ctx->xf[idx].c.cipher_key.length =
+						sa->cipher_key_len;
+				sa_ctx->xf[idx].c.auth_key.length =
+						sa->auth_key_len;
+				sa_ctx->xf[idx].c.salt = sa->salt;
+			}
+
 			sa_ctx->xf[idx].c.op = (inbound == 1)?
 						RTE_SECURITY_IPSEC_OP_DECAP :
 						RTE_SECURITY_IPSEC_OP_ENCAP;
@@ -835,9 +854,11 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 			}
 
 			if (inbound) {
-				sa_ctx->xf[idx].b.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
+				sa_ctx->xf[idx].b.type =
+						RTE_CRYPTO_SYM_XFORM_CIPHER;
 				sa_ctx->xf[idx].b.cipher.algo = sa->cipher_algo;
-				sa_ctx->xf[idx].b.cipher.key.data = sa->cipher_key;
+				sa_ctx->xf[idx].b.cipher.key.data =
+						sa->cipher_key;
 				sa_ctx->xf[idx].b.cipher.key.length =
 					sa->cipher_key_len;
 				sa_ctx->xf[idx].b.cipher.op =
@@ -846,7 +867,8 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 				sa_ctx->xf[idx].b.cipher.iv.offset = IV_OFFSET;
 				sa_ctx->xf[idx].b.cipher.iv.length = iv_length;
 
-				sa_ctx->xf[idx].a.type = RTE_CRYPTO_SYM_XFORM_AUTH;
+				sa_ctx->xf[idx].a.type =
+						RTE_CRYPTO_SYM_XFORM_AUTH;
 				sa_ctx->xf[idx].a.auth.algo = sa->auth_algo;
 				sa_ctx->xf[idx].a.auth.key.data = sa->auth_key;
 				sa_ctx->xf[idx].a.auth.key.length =
@@ -856,9 +878,11 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 				sa_ctx->xf[idx].a.auth.op =
 					RTE_CRYPTO_AUTH_OP_VERIFY;
 			} else { /* outbound */
-				sa_ctx->xf[idx].a.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
+				sa_ctx->xf[idx].a.type =
+					RTE_CRYPTO_SYM_XFORM_CIPHER;
 				sa_ctx->xf[idx].a.cipher.algo = sa->cipher_algo;
-				sa_ctx->xf[idx].a.cipher.key.data = sa->cipher_key;
+				sa_ctx->xf[idx].a.cipher.key.data =
+					sa->cipher_key;
 				sa_ctx->xf[idx].a.cipher.key.length =
 					sa->cipher_key_len;
 				sa_ctx->xf[idx].a.cipher.op =
@@ -867,9 +891,12 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 				sa_ctx->xf[idx].a.cipher.iv.offset = IV_OFFSET;
 				sa_ctx->xf[idx].a.cipher.iv.length = iv_length;
 
-				sa_ctx->xf[idx].b.type = RTE_CRYPTO_SYM_XFORM_AUTH;
-				sa_ctx->xf[idx].b.auth.algo = sa->auth_algo;
-				sa_ctx->xf[idx].b.auth.key.data = sa->auth_key;
+				sa_ctx->xf[idx].b.type =
+					RTE_CRYPTO_SYM_XFORM_AUTH;
+				sa_ctx->xf[idx].b.auth.algo =
+					sa->auth_algo;
+				sa_ctx->xf[idx].b.auth.key.data =
+						sa->auth_key;
 				sa_ctx->xf[idx].b.auth.key.length =
 					sa->auth_key_len;
 				sa_ctx->xf[idx].b.auth.digest_length =
@@ -991,8 +1018,8 @@ single_inbound_lookup(struct ipsec_sa *sadb, struct rte_mbuf *pkt,
 	case IP6_TUNNEL:
 		src6_addr = RTE_PTR_ADD(ip, offsetof(struct ip6_hdr, ip6_src));
 		if ((ip->ip_v == IP6_VERSION) &&
-				!memcmp(&sa->src.ip.ip6.ip6, src6_addr, 16) &&
-				!memcmp(&sa->dst.ip.ip6.ip6, src6_addr + 16, 16))
+			!memcmp(&sa->src.ip.ip6.ip6, src6_addr, 16) &&
+			!memcmp(&sa->dst.ip.ip6.ip6, src6_addr + 16, 16))
 			*sa_ret = sa;
 		break;
 	case TRANSPORT:

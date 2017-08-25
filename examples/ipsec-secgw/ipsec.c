@@ -58,13 +58,17 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 	key.cipher_algo = (uint8_t)sa->cipher_algo;
 	key.auth_algo = (uint8_t)sa->auth_algo;
 
-	ret = rte_hash_lookup_data(ipsec_ctx->cdev_map, &key,
-			(void **)&cdev_id_qp);
-	if (ret < 0) {
-		RTE_LOG(ERR, IPSEC, "No cryptodev: core %u, cipher_algo %u, "
-				"auth_algo %u\n", key.lcore_id, key.cipher_algo,
-				key.auth_algo);
-		return -1;
+	if (sa->type == RTE_SECURITY_SESS_NONE) {
+		ret = rte_hash_lookup_data(ipsec_ctx->cdev_map, &key,
+				(void **)&cdev_id_qp);
+		if (ret < 0) {
+			RTE_LOG(ERR, IPSEC, "No cryptodev: core %u, "
+					"cipher_algo %u, "
+					"auth_algo %u\n",
+					key.lcore_id, key.cipher_algo,
+					key.auth_algo);
+			return -1;
+		}
 	}
 
 	RTE_LOG_DP(DEBUG, IPSEC, "Create session for SA spi %u on cryptodev "
@@ -79,7 +83,8 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 				sa->crypto_session, sa->xforms,
 				ipsec_ctx->session_pool);
 
-		rte_cryptodev_info_get(ipsec_ctx->tbl[cdev_id_qp].id, &cdev_info);
+		rte_cryptodev_info_get(ipsec_ctx->tbl[cdev_id_qp].id,
+				&cdev_info);
 		if (cdev_info.sym.max_nb_sessions_per_qp > 0) {
 			ret = rte_cryptodev_queue_pair_attach_sym_session(
 					ipsec_ctx->tbl[cdev_id_qp].id,
@@ -146,6 +151,7 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 	struct ipsec_mbuf_metadata *priv;
 	struct rte_crypto_sym_op *sym_cop;
 	struct ipsec_sa *sa;
+	struct cdev_qp *cqp;
 
 	for (i = 0; i < nb_pkts; i++) {
 		if (unlikely(sas[i] == NULL)) {
@@ -202,8 +208,31 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 			}
 			break;
 		case RTE_SECURITY_SESS_ETH_PROTO_OFFLOAD:
-		case RTE_SECURITY_SESS_ETH_INLINE_CRYPTO:
 			break;
+		case RTE_SECURITY_SESS_ETH_INLINE_CRYPTO:
+			priv->cop.type = RTE_CRYPTO_OP_TYPE_SYMMETRIC;
+			priv->cop.status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+
+			rte_prefetch0(&priv->sym_cop);
+
+			if ((unlikely(sa->sec_session == NULL)) &&
+					create_session(ipsec_ctx, sa)) {
+				rte_pktmbuf_free(pkts[i]);
+				continue;
+			}
+
+			rte_security_attach_session(&priv->cop,
+					sa->sec_session);
+
+			ret = xform_func(pkts[i], sa, &priv->cop);
+			if (unlikely(ret)) {
+				rte_pktmbuf_free(pkts[i]);
+				continue;
+			}
+
+			cqp = &ipsec_ctx->tbl[sa->cdev_id_qp];
+			cqp->ol_pkts[cqp->ol_pkts_cnt++] = pkts[i];
+			continue;
 		}
 
 		RTE_ASSERT(sa->cdev_id_qp < ipsec_ctx->nb_qps);
@@ -227,6 +256,20 @@ ipsec_dequeue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 		cqp = &ipsec_ctx->tbl[ipsec_ctx->last_qp++];
 		if (ipsec_ctx->last_qp == ipsec_ctx->nb_qps)
 			ipsec_ctx->last_qp %= ipsec_ctx->nb_qps;
+
+
+		while (cqp->ol_pkts_cnt > 0 && nb_pkts < max_pkts) {
+			pkt = cqp->ol_pkts[--cqp->ol_pkts_cnt];
+			rte_prefetch0(pkt);
+			priv = get_priv(pkt);
+			sa = priv->sa;
+			ret = xform_func(pkt, sa, &priv->cop);
+			if (unlikely(ret)) {
+				rte_pktmbuf_free(pkt);
+				continue;
+			}
+			pkts[nb_pkts++] = pkt;
+		}
 
 		if (cqp->in_flight == 0)
 			continue;

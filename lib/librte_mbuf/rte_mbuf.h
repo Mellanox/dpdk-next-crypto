@@ -189,9 +189,25 @@ extern "C" {
  */
 #define PKT_RX_TIMESTAMP     (1ULL << 17)
 
+/**
+ * Indicate that security offload processing was applied on the RX packet.
+ */
+#define PKT_RX_SECURITY_OFFLOAD		(1ULL << 18)
+
+/**
+ * Indicate that security offload processing failed on the RX packet.
+ */
+#define PKT_RX_SECURITY_OFFLOAD_FAILED  (1ULL << 19)
+
+
 /* add new RX flags here */
 
 /* add new TX flags here */
+
+/**
+ * Request security offload processing on the TX packet.
+ */
+#define PKT_TX_SECURITY_OFFLOAD (1ULL << 43)
 
 /**
  * Offload the MACsec. This flag must be set by the application to enable
@@ -316,7 +332,8 @@ extern "C" {
 		PKT_TX_QINQ_PKT |        \
 		PKT_TX_VLAN_PKT |        \
 		PKT_TX_TUNNEL_MASK |	 \
-		PKT_TX_MACSEC)
+		PKT_TX_MACSEC |		 \
+		PKT_TX_SECURITY_OFFLOAD)
 
 #define __RESERVED           (1ULL << 61) /**< reserved for future mbuf use */
 

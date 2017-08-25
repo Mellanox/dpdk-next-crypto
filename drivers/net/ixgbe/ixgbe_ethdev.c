@@ -1135,6 +1135,9 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev)
 	PMD_INIT_FUNC_TRACE();
 
 	eth_dev->dev_ops = &ixgbe_eth_dev_ops;
+#ifdef RTE_LIBRTE_IXGBE_IPSEC
+	eth_dev->sec_ops = &ixgbe_security_ops;
+#endif /* RTE_LIBRTE_IXGBE_IPSEC */
 	eth_dev->rx_pkt_burst = &ixgbe_recv_pkts;
 	eth_dev->tx_pkt_burst = &ixgbe_xmit_pkts;
 	eth_dev->tx_pkt_prepare = &ixgbe_prep_pkts;

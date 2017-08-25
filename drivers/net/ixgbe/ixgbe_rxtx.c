@@ -395,7 +395,8 @@ ixgbe_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 static inline void
 ixgbe_set_xmit_ctx(struct ixgbe_tx_queue *txq,
 		volatile struct ixgbe_adv_tx_context_desc *ctx_txd,
-		uint64_t ol_flags, union ixgbe_tx_offload tx_offload)
+		uint64_t ol_flags, union ixgbe_tx_offload tx_offload,
+		__rte_unused struct rte_mbuf *mb)
 {
 	uint32_t type_tucmd_mlhl;
 	uint32_t mss_l4len_idx = 0;
@@ -479,6 +480,20 @@ ixgbe_set_xmit_ctx(struct ixgbe_tx_queue *txq,
 		seqnum_seed |= tx_offload.l2_len
 			       << IXGBE_ADVTXD_TUNNEL_LEN;
 	}
+#ifdef RTE_LIBRTE_IXGBE_IPSEC
+	if (mb->ol_flags & PKT_TX_SECURITY_OFFLOAD) {
+		struct ixgbe_crypto_tx_desc_metadata mdata = {
+			.data = ixgbe_crypto_get_txdesc_flags(txq->port_id, mb),
+		};
+		seqnum_seed |=
+			(IXGBE_ADVTXD_IPSEC_SA_INDEX_MASK & mdata.sa_idx);
+		type_tucmd_mlhl |= mdata.enc ?
+			(IXGBE_ADVTXD_TUCMD_IPSEC_TYPE_ESP |
+				IXGBE_ADVTXD_TUCMD_IPSEC_ENCRYPT_EN) : 0;
+		type_tucmd_mlhl |=
+			(mdata.pad_len & IXGBE_ADVTXD_IPSEC_ESP_LEN_MASK);
+	}
+#endif /* RTE_LIBRTE_IXGBE_IPSEC */
 
 	txq->ctx_cache[ctx_idx].flags = ol_flags;
 	txq->ctx_cache[ctx_idx].tx_offload.data[0]  =
@@ -855,7 +870,7 @@ ixgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 				}
 
 				ixgbe_set_xmit_ctx(txq, ctx_txd, tx_ol_req,
-					tx_offload);
+					tx_offload, tx_pkt);
 
 				txe->last_id = tx_last;
 				tx_id = txe->next_id;
@@ -872,7 +887,13 @@ ixgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			olinfo_status |= ctx << IXGBE_ADVTXD_IDX_SHIFT;
 		}
 
+#ifdef RTE_LIBRTE_IXGBE_IPSEC
+		olinfo_status |= ((pkt_len << IXGBE_ADVTXD_PAYLEN_SHIFT) |
+				(((ol_flags & PKT_TX_SECURITY_OFFLOAD) != 0)
+					* IXGBE_ADVTXD_POPTS_IPSEC));
+#else /* RTE_LIBRTE_IXGBE_IPSEC */
 		olinfo_status |= (pkt_len << IXGBE_ADVTXD_PAYLEN_SHIFT);
+#endif /* RTE_LIBRTE_IXGBE_IPSEC */
 
 		m_seg = tx_pkt;
 		do {
@@ -1446,6 +1467,14 @@ rx_desc_error_to_pkt_flags(uint32_t rx_status)
 	    (rx_status & IXGBE_RXDADV_ERR_OUTERIPER)) {
 		pkt_flags |= PKT_RX_EIP_CKSUM_BAD;
 	}
+
+#ifdef RTE_LIBRTE_IXGBE_IPSEC
+	if (rx_status & IXGBE_RXD_STAT_SECP) {
+		pkt_flags |= PKT_RX_SECURITY_OFFLOAD;
+		if (rx_status & IXGBE_RXDADV_LNKSEC_ERROR_BAD_SIG)
+			pkt_flags |= PKT_RX_SECURITY_OFFLOAD_FAILED;
+	}
+#endif /* RTE_LIBRTE_IXGBE_IPSEC */
 
 	return pkt_flags;
 }

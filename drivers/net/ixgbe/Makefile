@@ -118,10 +118,12 @@ SRCS-$(CONFIG_RTE_IXGBE_INC_VECTOR) += ixgbe_rxtx_vec_neon.c
 else
 SRCS-$(CONFIG_RTE_IXGBE_INC_VECTOR) += ixgbe_rxtx_vec_sse.c
 endif
-
 ifeq ($(CONFIG_RTE_LIBRTE_IXGBE_BYPASS),y)
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_bypass.c
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_82599_bypass.c
+endif
+ifeq ($(CONFIG_RTE_LIBRTE_IXGBE_IPSEC),y)
+SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_ipsec.c
 endif
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += rte_pmd_ixgbe.c
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_tm.c

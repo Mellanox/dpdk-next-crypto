@@ -128,6 +128,9 @@ desc_to_olflags_v(__m128i descs[4], __m128i mbuf_init, uint8_t vlan_flags,
 {
 	__m128i ptype0, ptype1, vtag0, vtag1, csum;
 	__m128i rearm0, rearm1, rearm2, rearm3;
+#ifdef RTE_LIBRTE_IXGBE_IPSEC
+	__m128i sterr0, sterr1, sterr2, sterr3, tmp1, tmp2;
+#endif /* RTE_LIBRTE_IXGBE_IPSEC */
 
 	/* mask everything except rss type */
 	const __m128i rsstype_msk = _mm_set_epi16(
@@ -173,6 +176,19 @@ desc_to_olflags_v(__m128i descs[4], __m128i mbuf_init, uint8_t vlan_flags,
 		0, 0, 0, 0,
 		0, PKT_RX_L4_CKSUM_GOOD >> sizeof(uint8_t), 0,
 		PKT_RX_L4_CKSUM_GOOD >> sizeof(uint8_t));
+
+#ifdef RTE_LIBRTE_IXGBE_IPSEC
+	const __m128i ipsec_sterr_msk = _mm_set_epi32(
+		0, IXGBE_RXD_STAT_SECP | IXGBE_RXDADV_LNKSEC_ERROR_BAD_SIG,
+		0, 0);
+	const __m128i ipsec_proc_msk  = _mm_set_epi32(
+		0, IXGBE_RXD_STAT_SECP, 0, 0);
+	const __m128i ipsec_err_flag  = _mm_set_epi32(
+		0, PKT_RX_SECURITY_OFFLOAD_FAILED | PKT_RX_SECURITY_OFFLOAD,
+		0, 0);
+	const __m128i ipsec_proc_flag = _mm_set_epi32(
+		0, PKT_RX_SECURITY_OFFLOAD, 0, 0);
+#endif /* RTE_LIBRTE_IXGBE_IPSEC */
 
 	ptype0 = _mm_unpacklo_epi16(descs[0], descs[1]);
 	ptype1 = _mm_unpacklo_epi16(descs[2], descs[3]);
@@ -220,6 +236,34 @@ desc_to_olflags_v(__m128i descs[4], __m128i mbuf_init, uint8_t vlan_flags,
 	rearm1 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(vtag1, 6), 0x10);
 	rearm2 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(vtag1, 4), 0x10);
 	rearm3 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(vtag1, 2), 0x10);
+
+#ifdef RTE_LIBRTE_IXGBE_IPSEC
+	/*inline ipsec, extract the flags from the descriptors*/
+	sterr0 = _mm_and_si128(descs[0], ipsec_sterr_msk);
+	sterr1 = _mm_and_si128(descs[1], ipsec_sterr_msk);
+	sterr2 = _mm_and_si128(descs[2], ipsec_sterr_msk);
+	sterr3 = _mm_and_si128(descs[3], ipsec_sterr_msk);
+	tmp1 = _mm_cmpeq_epi32(sterr0, ipsec_sterr_msk);
+	tmp2 = _mm_cmpeq_epi32(sterr0, ipsec_proc_msk);
+	sterr0 = _mm_or_si128(_mm_and_si128(tmp1, ipsec_err_flag),
+				_mm_and_si128(tmp2, ipsec_proc_flag));
+	tmp1 = _mm_cmpeq_epi32(sterr1, ipsec_sterr_msk);
+	tmp2 = _mm_cmpeq_epi32(sterr1, ipsec_proc_msk);
+	sterr1 = _mm_or_si128(_mm_and_si128(tmp1, ipsec_err_flag),
+				_mm_and_si128(tmp2, ipsec_proc_flag));
+	tmp1 = _mm_cmpeq_epi32(sterr2, ipsec_sterr_msk);
+	tmp2 = _mm_cmpeq_epi32(sterr2, ipsec_proc_msk);
+	sterr2 = _mm_or_si128(_mm_and_si128(tmp1, ipsec_err_flag),
+				_mm_and_si128(tmp2, ipsec_proc_flag));
+	tmp1 = _mm_cmpeq_epi32(sterr3, ipsec_sterr_msk);
+	tmp2 = _mm_cmpeq_epi32(sterr3, ipsec_proc_msk);
+	sterr3 = _mm_or_si128(_mm_and_si128(tmp1, ipsec_err_flag),
+				_mm_and_si128(tmp2, ipsec_proc_flag));
+	rearm0 = _mm_or_si128(rearm0, sterr0);
+	rearm1 = _mm_or_si128(rearm1, sterr1);
+	rearm2 = _mm_or_si128(rearm2, sterr2);
+	rearm3 = _mm_or_si128(rearm3, sterr3);
+#endif /* RTE_LIBRTE_IXGBE_IPSEC */
 
 	/* write the rearm data and the olflags in one write */
 	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, ol_flags) !=

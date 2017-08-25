@@ -1649,6 +1649,7 @@ struct rte_eth_dev {
 	 */
 	struct rte_eth_rxtx_callback *pre_tx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
 	enum rte_eth_dev_state state; /**< Flag indicating the port state */
+	struct rte_security_ops *sec_ops;  /**< Security ops */
 } __rte_cache_aligned;
 
 struct rte_eth_dev_sriov {

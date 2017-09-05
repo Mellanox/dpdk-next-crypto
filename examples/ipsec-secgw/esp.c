@@ -58,13 +58,12 @@ esp_inbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 	struct rte_crypto_sym_op *sym_cop;
 	int32_t payload_len, ip_hdr_len;
 
+	RTE_ASSERT(sa != NULL);
 	if (sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO)
 		return 0;
 
 	RTE_ASSERT(m != NULL);
-	RTE_ASSERT(sa != NULL);
 	RTE_ASSERT(cop != NULL);
-
 	ip4 = rte_pktmbuf_mtod(m, struct ip *);
 	if (likely(ip4->ip_v == IPVERSION))
 		ip_hdr_len = ip4->ip_hl * 4;
@@ -178,7 +177,6 @@ esp_inbound_post(struct rte_mbuf *m, struct ipsec_sa *sa,
 	RTE_ASSERT(sa != NULL);
 	RTE_ASSERT(cop != NULL);
 
-
 	if (sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO) {
 		if (m->ol_flags & PKT_RX_SECURITY_OFFLOAD
 				&& m->ol_flags & PKT_RX_SECURITY_OFFLOAD_FAILED)
@@ -187,28 +185,32 @@ esp_inbound_post(struct rte_mbuf *m, struct ipsec_sa *sa,
 			cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
 	}
 
-
 	if (cop->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
 		RTE_LOG(ERR, IPSEC_ESP, "failed crypto op\n");
 		return -1;
 	}
 
-	nexthdr = rte_pktmbuf_mtod_offset(m, uint8_t*,
-			rte_pktmbuf_pkt_len(m) - sa->digest_len - 1);
-	pad_len = nexthdr - 1;
+	if (sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO &&
+	    sa->sec_xform->options.no_trailer) {
+		nexthdr = &m->inner_esp_next_proto;
+	} else {
+		nexthdr = rte_pktmbuf_mtod_offset(m, uint8_t*,
+				rte_pktmbuf_pkt_len(m) - sa->digest_len - 1);
+		pad_len = nexthdr - 1;
 
-	padding = pad_len - *pad_len;
-	for (i = 0; i < *pad_len; i++) {
-		if (padding[i] != i + 1) {
-			RTE_LOG(ERR, IPSEC_ESP, "invalid padding\n");
+		padding = pad_len - *pad_len;
+		for (i = 0; i < *pad_len; i++) {
+			if (padding[i] != i + 1) {
+				RTE_LOG(ERR, IPSEC_ESP, "invalid padding\n");
+				return -EINVAL;
+			}
+		}
+
+		if (rte_pktmbuf_trim(m, *pad_len + 2 + sa->digest_len)) {
+			RTE_LOG(ERR, IPSEC_ESP,
+					"failed to remove pad_len + digest\n");
 			return -EINVAL;
 		}
-	}
-
-	if (rte_pktmbuf_trim(m, *pad_len + 2 + sa->digest_len)) {
-		RTE_LOG(ERR, IPSEC_ESP,
-				"failed to remove pad_len + digest\n");
-		return -EINVAL;
 	}
 
 	if (unlikely(sa->flags == TRANSPORT)) {
@@ -239,14 +241,13 @@ esp_outbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 	struct ip *ip4;
 	struct ip6_hdr *ip6;
 	struct esp_hdr *esp = NULL;
-	uint8_t *padding, *new_ip, nlp;
+	uint8_t *padding = NULL, *new_ip, nlp;
 	struct rte_crypto_sym_op *sym_cop;
 	int32_t i;
-	uint16_t pad_payload_len, pad_len, ip_hdr_len;
+	uint16_t pad_payload_len, pad_len = 0, ip_hdr_len;
 
 	RTE_ASSERT(m != NULL);
 	RTE_ASSERT(sa != NULL);
-	RTE_ASSERT(cop != NULL);
 
 	ip_hdr_len = 0;
 
@@ -274,7 +275,6 @@ esp_outbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 	/* Padded payload length */
 	pad_payload_len = RTE_ALIGN_CEIL(rte_pktmbuf_pkt_len(m) -
 			ip_hdr_len + 2, sa->block_size);
-	pad_len = pad_payload_len + ip_hdr_len - rte_pktmbuf_pkt_len(m);
 
 	RTE_ASSERT(sa->flags == IP4_TUNNEL || sa->flags == IP6_TUNNEL ||
 			sa->flags == TRANSPORT);
@@ -296,12 +296,21 @@ esp_outbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 		return -EINVAL;
 	}
 
-	padding = (uint8_t *)rte_pktmbuf_append(m, pad_len + sa->digest_len);
-	if (unlikely(padding == NULL)) {
-		RTE_LOG(ERR, IPSEC_ESP, "not enough mbuf trailing space\n");
-		return -ENOSPC;
+	/* Add trailer padding if it is not constructed by HW */
+	if (sa->type != RTE_SECURITY_SESS_ETH_INLINE_CRYPTO ||
+	    (sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO &&
+	     sa->sec_xform->options.no_trailer)) {
+		pad_len = pad_payload_len + ip_hdr_len - rte_pktmbuf_pkt_len(m);
+
+		padding = (uint8_t *)rte_pktmbuf_append(m, pad_len +
+							sa->digest_len);
+		if (unlikely(padding == NULL)) {
+			RTE_LOG(ERR, IPSEC_ESP,
+					"not enough mbuf trailing space\n");
+			return -ENOSPC;
+		}
+		rte_prefetch0(padding);
 	}
-	rte_prefetch0(padding);
 
 	switch (sa->flags) {
 	case IP4_TUNNEL:
@@ -334,18 +343,37 @@ esp_outbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 	esp->spi = rte_cpu_to_be_32(sa->spi);
 	esp->seq = rte_cpu_to_be_32((uint32_t)sa->seq);
 
-	if (sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO)
-		return 0;
-
 	uint64_t *iv = (uint64_t *)(esp + 1);
 
+	switch (sa->cipher_algo) {
+	case RTE_CRYPTO_CIPHER_NULL:
+	case RTE_CRYPTO_CIPHER_AES_CBC:
+		memset(iv, 0, sa->iv_len);
+		break;
+	case RTE_CRYPTO_CIPHER_AES_CTR:
+	case RTE_CRYPTO_AEAD_AES_GCM:
+		*iv = sa->seq;
+		break;
+	default:
+		RTE_LOG(ERR, IPSEC_ESP, "unsupported cipher algorithm %u\n",
+			sa->cipher_algo);
+		return -EINVAL;
+	}
+
+	/* Set the inner esp next protocol for HW trailer construction */
+	if (sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO &&
+	    sa->sec_xform->options.no_trailer) {
+		m->inner_esp_next_proto = nlp;
+		goto done;
+	}
+
+	RTE_ASSERT(cop != NULL);
 	sym_cop = get_sym_cop(cop);
 	sym_cop->m_src = m;
 
 	if (sa->aead_algo == RTE_CRYPTO_AEAD_AES_GCM) {
 		uint8_t *aad;
 
-		*iv = sa->seq;
 		sym_cop->aead.data.offset = ip_hdr_len +
 			sizeof(struct esp_hdr) + sa->iv_len;
 		sym_cop->aead.data.length = pad_payload_len;
@@ -375,13 +403,11 @@ esp_outbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 		switch (sa->cipher_algo) {
 		case RTE_CRYPTO_CIPHER_NULL:
 		case RTE_CRYPTO_CIPHER_AES_CBC:
-			memset(iv, 0, sa->iv_len);
 			sym_cop->cipher.data.offset = ip_hdr_len +
 				sizeof(struct esp_hdr);
 			sym_cop->cipher.data.length = pad_payload_len + sa->iv_len;
 			break;
 		case RTE_CRYPTO_CIPHER_AES_CTR:
-			*iv = sa->seq;
 			sym_cop->cipher.data.offset = ip_hdr_len +
 				sizeof(struct esp_hdr) + sa->iv_len;
 			sym_cop->cipher.data.length = pad_payload_len;
@@ -423,17 +449,17 @@ esp_outbound(struct rte_mbuf *m, struct ipsec_sa *sa,
 				rte_pktmbuf_pkt_len(m) - sa->digest_len);
 	}
 
+done:
 	return 0;
 }
 
 int
 esp_outbound_post(struct rte_mbuf *m __rte_unused,
-		struct ipsec_sa *sa __rte_unused,
+		struct ipsec_sa *sa,
 		struct rte_crypto_op *cop)
 {
 	RTE_ASSERT(m != NULL);
 	RTE_ASSERT(sa != NULL);
-	RTE_ASSERT(cop != NULL);
 
 	if (sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO) {
 		m->ol_flags |= PKT_TX_SECURITY_OFFLOAD;

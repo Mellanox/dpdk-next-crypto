@@ -39,6 +39,7 @@
 #include <rte_byteorder.h>
 #include <rte_crypto.h>
 #include <rte_security.h>
+#include <rte_flow.h>
 
 #define RTE_LOGTYPE_IPSEC       RTE_LOGTYPE_USER1
 #define RTE_LOGTYPE_IPSEC_ESP   RTE_LOGTYPE_USER2
@@ -104,6 +105,19 @@ struct ipsec_sa {
 		struct rte_cryptodev_sym_session *crypto_session;
 		struct rte_security_session *sec_session;
 	};
+	// rte_flow parameters start
+	struct rte_flow_attr attr;
+#define MAX_RTE_FLOW_PATTERN (4)
+	// ETH + IP + ESP + END
+	union {
+		struct rte_flow_item_ipv4 ipv4;
+		struct rte_flow_item_ipv6 ipv6;
+	} ip_spec;
+	struct rte_flow_item_esp esp_spec;
+	struct rte_flow_item pattern[MAX_RTE_FLOW_PATTERN];
+	struct rte_flow_action_security security_action;
+	struct rte_flow *flow;
+	// rte_flow parameters end
 	enum rte_crypto_cipher_algorithm cipher_algo;
 	enum rte_crypto_auth_algorithm auth_algo;
 	enum rte_crypto_aead_algorithm aead_algo;
@@ -144,6 +158,17 @@ struct cdev_qp {
 	struct rte_crypto_op *buf[MAX_PKT_BURST] __rte_aligned(sizeof(void *));
 	struct rte_mbuf *ol_pkts[MAX_PKT_BURST] __rte_aligned(sizeof(void *));
 	uint16_t ol_pkts_cnt;
+};
+
+struct sa_ctx {
+	struct ipsec_sa sa[IPSEC_SA_MAX_ENTRIES];
+	union {
+		struct {
+			struct rte_crypto_sym_xform a;
+			struct rte_crypto_sym_xform b;
+		};
+		struct rte_security_ipsec_xform c;
+	} xf[IPSEC_SA_MAX_ENTRIES];
 };
 
 struct ipsec_ctx {
@@ -247,4 +272,6 @@ sa_init(struct socket_ctx *ctx, int32_t socket_id);
 void
 rt_init(struct socket_ctx *ctx, int32_t socket_id);
 
+int
+create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa);
 #endif /* __IPSEC_H__ */

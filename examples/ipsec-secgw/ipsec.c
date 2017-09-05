@@ -41,11 +41,12 @@
 #include <rte_cryptodev.h>
 #include <rte_mbuf.h>
 #include <rte_hash.h>
+#include <rte_flow.h>
 
 #include "ipsec.h"
 #include "esp.h"
 
-static inline int
+int
 create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 {
 	struct rte_cryptodev_info cdev_info;
@@ -113,6 +114,27 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 					ret);
 			return -1;
 		}
+
+		if (sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO) {
+			struct rte_flow_action action[2];
+			struct rte_flow_error err;
+			action[0].type = RTE_FLOW_ACTION_TYPE_SECURITY;
+			action[0].conf = &sa->sec_session;
+			action[1].type = RTE_FLOW_ITEM_TYPE_END;
+
+			RTE_LOG_DP(DEBUG, IPSEC,
+					"Create inline session for SA spi %u on portid %u\n",
+					sa->spi, sa->portid);
+
+			sa->flow = rte_flow_create(sa->portid, &sa->attr,
+					sa->pattern, action, &err);
+			if (sa->flow == NULL) {
+				RTE_LOG(ERR, IPSEC, "Failed to create ipsec flow message: %s\n",
+						err.message);
+				return -1;
+			}
+		}
+
 	}
 	sa->cdev_id_qp = cdev_id_qp;
 

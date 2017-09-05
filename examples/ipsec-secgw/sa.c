@@ -47,6 +47,8 @@
 #include <rte_errno.h>
 #include <rte_ip.h>
 #include <rte_random.h>
+#include <rte_flow.h>
+#include <rte_ethdev.h>
 
 #include "ipsec.h"
 #include "esp.h"
@@ -491,6 +493,8 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 					return;
 				rule->src.ip.ip4 = rte_bswap32(
 					(uint32_t)ip.s_addr);
+				rule->src.ip.ip4 = rte_cpu_to_be_32(
+						rule->src.ip.ip4);
 			} else if (rule->flags == IP6_TUNNEL) {
 				struct in6_addr ip;
 
@@ -534,6 +538,8 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 					return;
 				rule->dst.ip.ip4 = rte_bswap32(
 					(uint32_t)ip.s_addr);
+				rule->dst.ip.ip4 = rte_cpu_to_be_32(
+						rule->dst.ip.ip4);
 			} else if (rule->flags == IP6_TUNNEL) {
 				struct in6_addr ip;
 
@@ -701,17 +707,6 @@ print_one_sa_rule(const struct ipsec_sa *sa, int inbound)
 	printf("\n");
 }
 
-struct sa_ctx {
-	struct ipsec_sa sa[IPSEC_SA_MAX_ENTRIES];
-	union {
-		struct {
-			struct rte_crypto_sym_xform a;
-			struct rte_crypto_sym_xform b;
-		};
-		struct rte_security_ipsec_xform c;
-	} xf[IPSEC_SA_MAX_ENTRIES];
-};
-
 static struct sa_ctx *
 sa_create(const char *name, int32_t socket_id)
 {
@@ -741,11 +736,39 @@ sa_create(const char *name, int32_t socket_id)
 }
 
 static int
+check_eth_dev_caps(uint16_t portid, uint32_t inbound)
+{
+	struct rte_eth_dev_info dev_info;
+
+	rte_eth_dev_info_get(portid, &dev_info);
+
+	if (inbound) {
+		if ((dev_info.rx_offload_capa &
+					DEV_RX_OFFLOAD_IPSEC_CRYPTO) == 0) {
+			RTE_LOG(WARNING, PORT,
+					"hardware RX IPSec offload is not supported\n");
+			return -EINVAL;
+		}
+
+	} else { /* outbound */
+		if ((dev_info.tx_offload_capa &
+					DEV_TX_OFFLOAD_IPSEC_CRYPTO_HW_TRAILER) == 0) {
+			RTE_LOG(WARNING, PORT,
+					"hardware TX IPSec offload is not supported\n");
+			return -EINVAL;
+		}
+	}
+	return 0;
+}
+
+
+static int
 sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 		uint32_t nb_entries, uint32_t inbound)
 {
 	struct ipsec_sa *sa;
-	uint32_t i, idx;
+	uint32_t i, idx, j;
+
 	uint16_t iv_length;
 
 	for (i = 0; i < nb_entries; i++) {
@@ -759,14 +782,11 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 		*sa = entries[i];
 		sa->seq = 0;
 
-		switch (sa->flags) {
-		case IP4_TUNNEL:
-			sa->src.ip.ip4 = rte_cpu_to_be_32(sa->src.ip.ip4);
-			sa->dst.ip.ip4 = rte_cpu_to_be_32(sa->dst.ip.ip4);
-		}
-
 		if (sa->type == RTE_SECURITY_SESS_CRYPTO_PROTO_OFFLOAD ||
 			sa->type == RTE_SECURITY_SESS_ETH_INLINE_CRYPTO) {
+
+			if (check_eth_dev_caps(sa->portid, inbound))
+				return -EINVAL;
 
 			if (sa->aead_algo == RTE_CRYPTO_AEAD_AES_GCM) {
 				sa_ctx->xf[idx].c.aead_alg =
@@ -790,9 +810,18 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 				sa_ctx->xf[idx].c.salt = sa->salt;
 			}
 
+			RTE_LOG(WARNING, PORT, "Initializing inline ipsec using rte_flow\n");
+			j = 0;
+			sa->pattern[j++].type = RTE_FLOW_ITEM_TYPE_ETH;
+
+			memset(&sa->attr, 0, sizeof(struct rte_flow_attr));
+			if (inbound)
+				sa->attr.ingress = 1;
+			else
+				sa->attr.egress = 1;
 			sa_ctx->xf[idx].c.op = (inbound == 1)?
-						RTE_SECURITY_IPSEC_OP_DECAP :
-						RTE_SECURITY_IPSEC_OP_ENCAP;
+					       RTE_SECURITY_IPSEC_OP_DECAP :
+					       RTE_SECURITY_IPSEC_OP_ENCAP;
 			sa_ctx->xf[idx].c.salt = sa->salt;
 			sa_ctx->xf[idx].c.spi = sa->spi;
 			if (sa->flags == IP4_TUNNEL) {
@@ -803,13 +832,43 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 						(uint8_t *)&sa->src.ip.ip4, 4);
 				memcpy((uint8_t *)&sa_ctx->xf[idx].c.tunnel.ipv4.dst_ip,
 						(uint8_t *)&sa->dst.ip.ip4, 4);
-//				sa_ctx->xf[idx].c.tunnel.ipv4.src_ip =
-//					(struct in_addr)sa->src.ip.ip4;
-//				sa_ctx->xf[idx].c.tunnel.ipv4.dst_ip =
-//					(struct in_addr)sa->dst.ip.ip4;
+				//sa_ctx->xf[idx].c.tunnel.ipv4.src_ip =
+				//(struct in_addr)sa->src.ip.ip4;
+				//sa_ctx->xf[idx].c.tunnel.ipv4.dst_ip =
+				//(struct in_addr)sa->dst.ip.ip4;
+				sa->pattern[j].type = RTE_FLOW_ITEM_TYPE_IPV4;
+				sa->pattern[j].spec = &sa->ip_spec.ipv4;
+				sa->pattern[j++].mask = &rte_flow_item_ipv4_mask;
+				sa->ip_spec.ipv4.hdr.src_addr = sa->src.ip.ip4 =
+					sa->src.ip.ip4;
+				sa->ip_spec.ipv4.hdr.dst_addr = sa->dst.ip.ip4 =
+					sa->dst.ip.ip4;
+			} else if (sa->flags == IP6_TUNNEL) {
+				sa_ctx->xf[idx].c.mode =
+					RTE_SECURITY_IPSEC_SA_MODE_TUNNEL;
+				memcpy((uint8_t *)&sa_ctx->xf[idx].c.tunnel.ipv6.src_addr,
+						(uint8_t *)&sa->src.ip.ip6, 16);
+				memcpy((uint8_t *)&sa_ctx->xf[idx].c.tunnel.ipv6.dst_addr,
+						(uint8_t *)&sa->dst.ip.ip6, 16);
+				sa->pattern[j].type = RTE_FLOW_ITEM_TYPE_IPV6;
+				sa->pattern[j].spec = &sa->ip_spec.ipv6;
+				sa->pattern[j++].mask = &rte_flow_item_ipv6_mask;
+				memcpy(sa->ip_spec.ipv6.hdr.src_addr,
+						sa->src.ip.ip6.ip6_b, 16);
+				memcpy(sa->ip_spec.ipv6.hdr.dst_addr,
+						sa->dst.ip.ip6.ip6_b, 16);
+			} else {
+				/* TODO support for Transport */
+				rte_exit(EXIT_FAILURE,
+						"Error creating offload SA with TRANSPORT, currently not supported\n");
 			}
-			/* TODO support for Transport and IPV6 tunnel */
+
 			sa->sec_xform = &sa_ctx->xf[idx].c;
+			sa->pattern[j].type = RTE_FLOW_ITEM_TYPE_ESP;
+			sa->pattern[j].spec = &sa->esp_spec;
+			sa->pattern[j++].mask = &rte_flow_item_esp_mask;
+			sa->esp_spec.hdr.spi = rte_cpu_to_be_32(entries[i].spi);
+			sa->pattern[j++].type = RTE_FLOW_ITEM_TYPE_END;
 
 			print_one_sa_rule(sa, inbound);
 			continue;

@@ -138,6 +138,16 @@ struct rte_security_ipsec_sa_options {
 	  */
 	uint32_t dec_ttl : 1;
 
+	/** HW constructs/removes trailer of packets
+	  *
+	  * * 1: Transmitted packets will have the trailer added to them by
+	  * 	 hardawre. The next protocol field will be based on the
+	  * 	 mbuf->inner_esp_next_proto field.
+	  * 	 Received packets have no trailer, the next protcol field is
+	  * 	 supplied in the mbuf->inner_esp_next_proto field.
+	  * * 0: Inner packet is not modified.
+	  */
+	uint32_t no_trailer : 1;
 };
 
 /** IPSec Operations */
